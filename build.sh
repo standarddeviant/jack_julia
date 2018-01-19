@@ -10,7 +10,8 @@ echo "JULIA_HOME = $JULIA_HOME"
 
 # gcc -Wall -Wextra -Wunused                           \
 
-gcc -o jack_julia -fPIC -I$JULIA_DIR/include/julia   \
+gcc -Wall -Wextra -Wunused                           \
+    -o jack_julia -fPIC -I$JULIA_DIR/include/julia   \
     -std=gnu99                                       \
     -L$JULIA_DIR/lib -L$JULIA_DIR/lib/julia          \
      jack_julia.c                                    \

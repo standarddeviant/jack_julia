@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
+// getopt needs to be included manually b/c we compile -    std=c99
+#include <getopt.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -19,28 +21,30 @@
 #include <julia.h>
 //#include <pa_ringbuffer.h>
 
+// START declaring variables for client
 #define JACK_JULIA_MAX_PORTS (64)
 #define JACK_JULIA_MAX_FRAMES (16384)
 jack_port_t *jackin_ports[JACK_JULIA_MAX_PORTS];
 jack_port_t *jackout_ports[JACK_JULIA_MAX_PORTS];
 jack_client_t *client;
 
-int nframes = 0;
-int inchans = 0;
-int outchans = 0;
+unsigned int nframes = 0;
+unsigned int inchans = 0;
+unsigned int outchans = 0;
 const char *JACK_CLIENT_DEFAULT_NAME = "jack_julia";
 #define JACK_CLIENT_NAME_SIZE (2048)
 #define JACK_PORT_NAME_SIZE (2048)
-char jackname[JACK_CLIENT_NAME_SIZE]   = {0};
-char inconnect[JACK_CLIENT_NAME_SIZE]  = {0};
-char outconnect[JACK_CLIENT_NAME_SIZE] = {0};
-char include[JACK_CLIENT_NAME_SIZE]    = {0};
-char funcname[JACK_CLIENT_NAME_SIZE]   = {0};
-
+char jackname[JACK_CLIENT_NAME_SIZE]     = {0};
+char inconnect[JACK_CLIENT_NAME_SIZE]    = {0};
+char outconnect[JACK_CLIENT_NAME_SIZE]   = {0};
+char include_file[JACK_CLIENT_NAME_SIZE] = {0};
+char include_str[JACK_CLIENT_NAME_SIZE]  = {0};
+char funcname[JACK_CLIENT_NAME_SIZE]     = {0};
+jl_function_t *funchandle;
 /* Create 2D array of float64 type for input/output */
 jl_array_t *input_array;
 jl_array_t *output_array;
-
+// STOP declaring variables for client
 
 
 
@@ -72,10 +76,11 @@ jl_array_t *output_array;
  * port to its output port. It will exit when stopped by 
  * the user (e.g. using Ctrl-C on a unix-ish operating system)
  */
-int audio_process(jack_nframes_t nframes, void *arg) {
-    int cidx, sidx;
-    jack_nframes_t fidx, nframes_read_available, nframes_write_available;
-    jack_nframes_t nframes_read, nframes_written;
+int jack_process(jack_nframes_t nframes, void *arg) {
+    unsigned int cidx, sidx;
+    // jack_nframes_t fidx, nframes_read_available, nframes_write_available;
+    // jack_nframes_t nframes_read, nframes_written;
+    // jack_nframes_t fidx;
 
     // silence compiler
     arg = arg;
@@ -90,7 +95,7 @@ int audio_process(jack_nframes_t nframes, void *arg) {
         jack_default_audio_sample_t *jackbuf = 
                 jack_port_get_buffer(jackin_ports[cidx], nframes);
         for(sidx=0; sidx<nframes; sidx++) {
-            *(in++) = *(jackbuf++)
+            *(in++) = *(jackbuf++);
         }
     }
 
@@ -103,7 +108,7 @@ int audio_process(jack_nframes_t nframes, void *arg) {
         jack_default_audio_sample_t *jackbuf = 
                 jack_port_get_buffer(jackout_ports[cidx], nframes);
         for(sidx=0; sidx<nframes; sidx++) {
-            *(out++) = *(jackbuf++)
+            *(jackbuf++) = *(out++);
         }
     }
 
@@ -131,8 +136,16 @@ int audio_process(jack_nframes_t nframes, void *arg) {
 void
 jack_shutdown (void *arg)
 {
-    // free(ringbuf_memory);
     arg=arg; /* silence compiler */
+    // free(ringbuf_memory);
+    /* let Julia GC know it can safely GC input_array and output_array */
+    JL_GC_POP(); 
+    /* strongly recommended: notify Julia that the
+         program is about to terminate. this allows
+         Julia time to cleanup pending write requests
+         and run all finalizers
+    */
+    jl_atexit_hook(0);
     exit (1);
 }
 
@@ -150,8 +163,14 @@ void usage(void) {
 }
 
 void fyi(void) {
-    printf("\nINFO: Attempting to call \n    %s from %s, where\n    nframes=%d, inchans=%d, outchans=%d, and \n    client-name='%s'\n\n",
-            funcname, include, nframes, inchans, outchans, jackname);
+    // printf("\nINFO: Attempting to call "
+    //        "\n    %s from %s, where"
+    //        "\n    nframes=%d"
+    //        "\n    inchans=%d"
+    //        "\n    outchans=%d"
+    //        "\n    client-name='%s'\n\n",
+    //         funcname, include_file, nframes, inchans, outchans, jackname);
+    return;
 }
 
 int main (int argc, char **argv)
@@ -165,7 +184,8 @@ int main (int argc, char **argv)
     jack_options_t options = JackNullOption;
     jack_status_t status;
 
-    int cidx, sidx, c, err;
+    int c;
+    unsigned int cidx, sidx;
 
     char portname[JACK_PORT_NAME_SIZE] = {0};
 
@@ -185,7 +205,7 @@ int main (int argc, char **argv)
     int option_index = 0;
 
     while ((c = getopt_long(argc, argv, 
-            "hr:i:o:a:b:n:c:f:h", long_options, NULL)) != -1)
+            "hr:i:o:a:b:n:c:f:h", long_options, &option_index)) != -1)
     switch (c) {
         case 'h':
             usage();
@@ -209,7 +229,9 @@ int main (int argc, char **argv)
             snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", optarg);
             break;
         case 'c':
-            snprintf(include, JACK_CLIENT_NAME_SIZE, "%s", optarg);
+            snprintf(include_file, JACK_CLIENT_NAME_SIZE, "%s", optarg);
+            snprintf(include_str, JACK_CLIENT_NAME_SIZE, \
+                "include(\"%s\")", include_file);
             break;
         case 'f':
             snprintf(funcname, JACK_CLIENT_NAME_SIZE, "%s", optarg);
@@ -277,7 +299,7 @@ int main (int argc, char **argv)
                 JackPortIsOutput, 0);
     }
 
-    /* create julia arrays/buffers */
+    /* create/allocate julia arrays/buffers */
     jl_value_t *array_type = jl_apply_array_type(
         (jl_value_t*)jl_float32_type, 2);
     input_array = jl_alloc_array_2d(array_type, nframes, inchans);
@@ -291,6 +313,11 @@ int main (int argc, char **argv)
         (jack_default_audio_sample_t*)jl_array_data(output_array);
     for(sidx=0; sidx<nframes*inchans; sidx++) in[sidx] = 0.0;
     for(sidx=0; sidx<nframes*outchans; sidx++) out[sidx] = 0.0;
+
+    /* set julia function handle with include and calling jl_get_function */
+    jl_eval_string(include_str);
+    funchandle = jl_get_function(jl_main_module, "wizbang");    
+    jl_call2(funchandle, (jl_value_t*)input_array, (jl_value_t*)output_array);
 
     /* Let's set up a pa_ringbuffer, for single producer, single consumer */
     /* ensure ringbuf_nframes is a power of 2 */
