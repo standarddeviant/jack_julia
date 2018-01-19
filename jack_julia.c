@@ -72,7 +72,7 @@ jl_array_t *output_array;
  * port to its output port. It will exit when stopped by 
  * the user (e.g. using Ctrl-C on a unix-ish operating system)
  */
-int jack_process(jack_nframes_t nframes, void *arg) {
+int audio_process(jack_nframes_t nframes, void *arg) {
     int cidx, sidx;
     jack_nframes_t fidx, nframes_read_available, nframes_write_available;
     jack_nframes_t nframes_read, nframes_written;
@@ -85,50 +85,38 @@ int jack_process(jack_nframes_t nframes, void *arg) {
     jack_default_audio_sample_t *out = \
         (jack_default_audio_sample_t*)jl_array_data(output_array);
 
-    // get input jack buffers as needed, and write from those buffers to in/out
-    for(cidx=0; cidx<sndchans; cidx++) {
-        jack_default_audio_sample_t *jackbuf = jack_port_get_buffer(jackin_ports[cidx], nframes);
+    // write from input jack-buffers to in input_array
+    for(cidx=0; cidx<inchans; cidx++) {
+        jack_default_audio_sample_t *jackbuf = 
+                jack_port_get_buffer(jackin_ports[cidx], nframes);
         for(sidx=0; sidx<nframes; sidx++) {
             *(in++) = *(jackbuf++)
         }
     }
 
-    // jl_call2()
-    // end PLAY_MODE
+    /* call fulia function */
+    /* FIXME, should we check funchandle for NULL each time? */
+    jl_call2(funchandle, (jl_value_t*)input_array, (jl_value_t*)output_array);
 
-    else if(sndmode == REC_MODE) {
-        // get pointers for all jack port buffers
-        jack_default_audio_sample_t *jackbufs[JACK_JULIA_MAX_PORTS];
-        for(cidx=0; cidx<sndchans; cidx++) {
-            jackbufs[cidx] = jack_port_get_buffer(jackin_ports[cidx], nframes);
+    // write from output_array to output jack-buffers
+    for(cidx=0; cidx<outchans; cidx++) {
+        jack_default_audio_sample_t *jackbuf = 
+                jack_port_get_buffer(jackout_ports[cidx], nframes);
+        for(sidx=0; sidx<nframes; sidx++) {
+            *(out++) = *(jackbuf++)
         }
-        
-        // write to linbufJACK one sample at a time
-        // set outer loop over frames/samples
-        sidx = 0; // use sample index to book-keep current index in to linbufJACK
-        for(fidx=0; fidx<nframes; fidx++) {
-            // set inner loop over channels/jackbufs
-            for(cidx=0; cidx<sndchans; cidx++) {
-                // this is naive, but might be fast enough
-                linbufJACK[sidx++] = jackbufs[cidx][fidx];
-            }
-        }
-
-        nframes_write_available = PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
-        if( nframes_write_available < nframes) {
-            /* FIXME, report overflow problem */
-        }
-
-        nframes_written = PaUtil_WriteRingBuffer(
-            pa_ringbuf, &(linbufJACK[0]), nframes);
-        if( nframes_written != nframes) {
-            /* FIXME, report overflow */
-        }
-    } // end REC_MODE
-
-    else {
-        /* FIXME, catch this error */
     }
+
+    // nframes_write_available = PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
+    // if( nframes_write_available < nframes) {
+    //     /* FIXME, report overflow problem */
+    // }
+
+    // nframes_written = PaUtil_WriteRingBuffer(
+    //     pa_ringbuf, &(linbufJACK[0]), nframes);
+    // if( nframes_written != nframes) {
+    //     /* FIXME, report overflow */
+    // }
 
     return 0;
 }
