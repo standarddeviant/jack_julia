@@ -1,7 +1,10 @@
-/** @file simple_client.c
+/** @file jack_julia.c
  *
- * @brief This simple client demonstrates the most basic features of JACK
- * as they would be used by many applications.
+ * @brief This code will create a jack client with the following inputs 
+ * inchans = number of audio input channels
+ * inchans = number of audio output frames
+ * include_file = file to include for custom audio processing code
+ * funcname = name of processing function to call
  */
 
 // "standard" libraries
@@ -19,6 +22,8 @@
 // #include <pthread.h>
 #include <jack/jack.h>
 #include <julia.h>
+JULIA_DEFINE_FAST_TLS() // only define this once, in an executable (not in a shared library) if you want fast code.
+
 //#include <pa_ringbuffer.h>
 
 // START declaring variables for client
@@ -100,9 +105,17 @@ int jack_process(jack_nframes_t nframes, void *arg) {
         }
     }
 
+    // printf("DBG: jl_is_initialized() = %d\n", jl_is_initialized());
+    // printf("DBG: jl_eval_string('%s') evaluates to ", func_check_str);
+    // printf("%d\n", jl_unbox_bool(jl_eval_string(func_check_str)));
+
+    jl_eval_string("@show sqrt(2.0)");
+
+    // printf("DBG: jl_is_initialized() = %d\n", jl_is_initialized());
+
     /* call fulia function */
     /* FIXME, should we check funchandle for NULL each time? */
-    jl_call2(funchandle, (jl_value_t*)input_array, (jl_value_t*)output_array);
+    // jl_call2(funchandle, (jl_value_t*)input_array, (jl_value_t*)output_array);
 
     // write from output_array to output jack-buffers
     for(cidx=0; cidx<outchans; cidx++) {
@@ -176,7 +189,8 @@ void usage() {
 
 void fyi(void) {
     printf("\n\nINFO: Attempting to call"
-           "\n    funcname='%s' from include_file='%s', where"
+           "\n    '%s' (funcname) from "
+           "\n    '%s' (include_file)"
            "\n    nframes=%d"
            "\n    inchans=%d"
            "\n    outchans=%d"
@@ -281,6 +295,10 @@ int main (int argc, char **argv)
         usage();
         return 0;
     }
+    else {
+        printf("\n\nINFO: recognized '%s' as julia function after including '%s'\n",
+            funcname, include_file); 
+    }
 
     /* ensure there's a reasonable jack client name if not already set */
     if( jackname[0] == 0 ) {
@@ -327,23 +345,27 @@ int main (int argc, char **argv)
     /* tell the JACK server to call `process()' whenever
         there is work to be done.
     */
+    printf("INFO: setting client jack_process\n");
     jack_set_process_callback (client, jack_process, 0);
 
     /* tell the JACK server to call `jack_shutdown()' if
         it ever shuts down, either entirely, or if it
         just decides to stop calling us.
     */
+    printf("INFO: setting client jack_shutdown\n");
     jack_on_shutdown (client, jack_shutdown, 0);
 
     /* FIXME, throw error if file sample rate and jack sample rate are different */
 
     /* create jack ports */
+    printf("INFO: creating %d in-ports\n", inchans);
     for(cidx=0; cidx<inchans; cidx++) {
         snprintf(portname, JACK_PORT_NAME_SIZE, "in_%02d", cidx+1);
         jackin_ports[cidx] = jack_port_register (client, portname,
                 JACK_DEFAULT_AUDIO_TYPE,
                 JackPortIsInput, 0);
     }
+    printf("INFO: creating %d out-ports\n", outchans);
     for(cidx=0; cidx<inchans; cidx++) {
         snprintf(portname, JACK_PORT_NAME_SIZE, "out_%02d", cidx+1);
         jackout_ports[cidx] = jack_port_register(client, portname,                    
@@ -365,6 +387,7 @@ int main (int argc, char **argv)
         (jack_default_audio_sample_t*)jl_array_data(output_array);
     for(sidx=0; sidx<nframes*inchans; sidx++) in[sidx] = 0.0;
     for(sidx=0; sidx<nframes*outchans; sidx++) out[sidx] = 0.0;
+    printf("INFO: created julia arrays for IO\n");
 
     /* set julia function handle with include and calling jl_get_function */
     jl_eval_string(include_str);
@@ -373,6 +396,7 @@ int main (int argc, char **argv)
     /* call function once to force it to be JIT-compiled */
     // FIXME, this call could mess with state variables of the function...
     jl_call2(funchandle, (jl_value_t*)input_array, (jl_value_t*)output_array);
+    printf("\n\nINFO: initialized and JIT'ed '%s'\n", funcname);
 
     /* Let's set up a pa_ringbuffer, for single producer, single consumer */
     /* ensure ringbuf_nframes is a power of 2 */
@@ -400,6 +424,7 @@ int main (int argc, char **argv)
         fprintf (stderr, "cannot activate client");
         exit (1);
     }
+    printf("\n\nINFO: activated jack client, '%s'\n", jackname);
 
     /* FIXME add command line arg to auto-connect to a block... */
     // ports = jack_get_ports (client, NULL, NULL,
