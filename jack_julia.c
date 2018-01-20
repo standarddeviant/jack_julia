@@ -151,25 +151,36 @@ jack_shutdown (void *arg)
 
 void usage(void) {
     printf("\n\n");
-    printf("Usage: jack_play_record [OPTION...] [-p play.wav | -c chans -r rec.wav]\n");
-    printf("  -h,    print this help text\n");
-    printf("  -c,    specify the number of channels (required for recording)\n");
-    printf("  -n,    specify the name of the jack client\n");
-    printf("  -f,    specify the intended nframes for use with jack server\n");
-    printf("         note, that this will save on memory, but is unsafe if the\n");
-    printf("         jack server nframes value is ever increased\n");
-    printf("  -w,    wait until W ports have been connected before playing or recording\n");
+    printf("Usage:\n");
+    printf("jack_julia [OPTIONS...] -i INCHANS -o OUTCHANS\n");
+    printf("           --include ALGO.jl --function ALGOFUNC\n");
+    printf("  -h, --help        print this help text\n");
+    printf("REQUIRED ARGS:\n");
+    printf("  -i, --inchans     set number of input channels\n");
+    printf("  -o, --outchans    set number of output channels\n");
+    printf("  -c, --include     set julia source file to include\n");
+    printf("  -f, --function    set julia processing function\n");
+    printf("      jack_julia will call this this function with two arguments:\n");
+    printf("        1) input_array, of size (nframes x inchans)\n");
+    printf("        2) output_array, of size (nframes x outchans)\n");
+    printf("OPTIONAL ARGS:\n");
+    printf("  -r, --nframes     set number of frames per function call\n");
+    printf("                    currently this must be the same as jack_get_buffer_size()");
+    printf("  -a, --inconnect   jack client to automatically connect to inputs\n");
+    printf("  -b, --outconnect  jack client to automatically connect to inputs\n");
+    printf("  -n, --name      specify the name of the jack client\n");
+    // printf("  -w,    wait until W ports have been connected before playing or recording\n");
     printf("\n\n");
 }
 
 void fyi(void) {
-    // printf("\nINFO: Attempting to call "
-    //        "\n    %s from %s, where"
-    //        "\n    nframes=%d"
-    //        "\n    inchans=%d"
-    //        "\n    outchans=%d"
-    //        "\n    client-name='%s'\n\n",
-    //         funcname, include_file, nframes, inchans, outchans, jackname);
+    printf("\nINFO: Attempting to call "
+           "\n    %s from %s, where"
+           "\n    nframes=%d"
+           "\n    inchans=%d"
+           "\n    outchans=%d"
+           "\n    client-name='%s'\n\n",
+            funcname, include_file, nframes, inchans, outchans, jackname);
     return;
 }
 
@@ -191,6 +202,7 @@ int main (int argc, char **argv)
 
     static struct option long_options[] = {
         /* These options set a flag. */
+        {"help",       no_argument,       0, 'h'},
         {"nframes",    required_argument, 0, 'r'},
         {"inchans",    required_argument, 0, 'i'},
         {"outchans",   required_argument, 0, 'o'},
@@ -240,7 +252,17 @@ int main (int argc, char **argv)
             abort ();
     }
 
-    /* FIXME, warn user if nframes != jack_server_nframes, or try to set the jack server? */
+    /* if there are no inchans AND no outchans, tell user to try again */
+    if( 0==inchans && 0==outchans ) {
+        printf("Usage error: inchans or outchans must be greater than 0\n");
+        usage();
+        return 0;
+    }
+
+    if( 0==nframes ) {
+        // FIXME set nframes from jack server
+    }
+    // FIXME, warn user if nframes != jack_server_nframes, or try to set the jack server?
 
     /* ensure there's a reasonable jack client name if not already set */
     if( jackname[0] == 0 ) {
