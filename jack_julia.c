@@ -34,12 +34,13 @@ unsigned int outchans = 0;
 const char *JACK_CLIENT_DEFAULT_NAME = "jack_julia";
 #define JACK_CLIENT_NAME_SIZE (2048)
 #define JACK_PORT_NAME_SIZE (2048)
-char jackname[JACK_CLIENT_NAME_SIZE]     = {0};
-char inconnect[JACK_CLIENT_NAME_SIZE]    = {0};
-char outconnect[JACK_CLIENT_NAME_SIZE]   = {0};
-char include_file[JACK_CLIENT_NAME_SIZE] = {0};
-char include_str[JACK_CLIENT_NAME_SIZE]  = {0};
-char funcname[JACK_CLIENT_NAME_SIZE]     = {0};
+char jackname[JACK_CLIENT_NAME_SIZE]       = {0};
+char inconnect[JACK_CLIENT_NAME_SIZE]      = {0};
+char outconnect[JACK_CLIENT_NAME_SIZE]     = {0};
+char include_file[JACK_CLIENT_NAME_SIZE]   = {0};
+char include_str[JACK_CLIENT_NAME_SIZE]    = {0};
+char funcname[JACK_CLIENT_NAME_SIZE]       = {0};
+char func_check_str[JACK_CLIENT_NAME_SIZE] = {0};
 jl_function_t *funchandle;
 /* Create 2D array of float64 type for input/output */
 jl_array_t *input_array;
@@ -149,7 +150,7 @@ jack_shutdown (void *arg)
     exit (1);
 }
 
-void usage(void) {
+void usage() {
     printf("\n\n");
     printf("Usage:\n");
     printf("jack_julia [OPTIONS...] -i INCHANS -o OUTCHANS\n");
@@ -165,7 +166,7 @@ void usage(void) {
     printf("        2) output_array, of size (nframes x outchans)\n");
     printf("OPTIONAL ARGS:\n");
     printf("  -r, --nframes     set number of frames per function call\n");
-    printf("                    currently this must be the same as jack_get_buffer_size()");
+    printf("                    currently this must be the same as jack_get_buffer_size()\n");
     printf("  -a, --inconnect   jack client to automatically connect to inputs\n");
     printf("  -b, --outconnect  jack client to automatically connect to inputs\n");
     printf("  -n, --name      specify the name of the jack client\n");
@@ -174,8 +175,8 @@ void usage(void) {
 }
 
 void fyi(void) {
-    printf("\nINFO: Attempting to call "
-           "\n    %s from %s, where"
+    printf("\n\nINFO: Attempting to call"
+           "\n    funcname='%s' from include_file='%s', where"
            "\n    nframes=%d"
            "\n    inchans=%d"
            "\n    outchans=%d"
@@ -220,7 +221,7 @@ int main (int argc, char **argv)
             "hr:i:o:a:b:n:c:f:h", long_options, &option_index)) != -1)
     switch (c) {
         case 'h':
-            usage();
+            usage("");
             return 0;
         case 'r':
             nframes = atoi(optarg);
@@ -247,6 +248,10 @@ int main (int argc, char **argv)
             break;
         case 'f':
             snprintf(funcname, JACK_CLIENT_NAME_SIZE, "%s", optarg);
+            snprintf(func_check_str, JACK_CLIENT_NAME_SIZE, \
+                "isdefined(:%s) && typeof(%s) <: Function",
+                funcname, funcname);
+
             break;
         default:
             abort ();
@@ -254,10 +259,30 @@ int main (int argc, char **argv)
 
     /* if there are no inchans AND no outchans, tell user to try again */
     if( 0==inchans && 0==outchans ) {
-        printf("Usage error: inchans or outchans must be greater than 0\n");
+        printf("ERR: inchans or outchans must be greater than 0");
         usage();
         return 0;
     }
+
+    /* check if file exists and is readable */
+    if( access( include_file, F_OK|R_OK ) == -1 ) {
+        printf("ERR: can not see file, '%s' as readable file", include_file);
+        usage();
+        return 0;
+    }
+
+    /* after file check, init julia, include file, and verify function */
+    /* initialize julia environment */
+    jl_init();
+    jl_eval_string(include_str);
+    if( !jl_unbox_bool(jl_eval_string(func_check_str)) ) {
+        printf("ERR: can not see function, '%s', after including '%s'", 
+            funcname, include_file);
+        usage();
+        return 0;
+    }
+
+
 
     if( 0==nframes ) {
         // FIXME set nframes from jack server
@@ -277,7 +302,7 @@ int main (int argc, char **argv)
     client = jack_client_open(jackname, options, &status, server_name);
     if (client == NULL) {
         fprintf (stderr, "jack_client_open() failed, "
-                "status = 0x%2.0x\n", status);
+                "status = 0x%02x\n", status);
         if (status & JackServerFailed) {
             fprintf (stderr, "Unable to connect to JACK server\n");
         }
@@ -291,8 +316,6 @@ int main (int argc, char **argv)
         fprintf(stderr, "unique name `%s' assigned\n", &(jackname[0]));
     }
 
-    /* initialize julia environment */
-    jl_init();
 
     /* tell the JACK server to call `process()' whenever
         there is work to be done.
