@@ -276,18 +276,11 @@ int main (int argc, char **argv)
     jl_init();
     jl_eval_string(include_str);
     if( !jl_unbox_bool(jl_eval_string(func_check_str)) ) {
-        printf("ERR: can not see function, '%s', after including '%s'", 
+        printf("ERR: can not see function, '%s', after including '%s'\n", 
             funcname, include_file);
         usage();
         return 0;
     }
-
-
-
-    if( 0==nframes ) {
-        // FIXME set nframes from jack server
-    }
-    // FIXME, warn user if nframes != jack_server_nframes, or try to set the jack server?
 
     /* ensure there's a reasonable jack client name if not already set */
     if( jackname[0] == 0 ) {
@@ -295,9 +288,7 @@ int main (int argc, char **argv)
             JACK_CLIENT_DEFAULT_NAME);
     }
 
-    /* let user know what settings have been parsed */
-    fyi();
-
+    /* create unactivated jack client for using jack to determine arg values*/
     /* open a client connection to the JACK server */
     client = jack_client_open(jackname, options, &status, server_name);
     if (client == NULL) {
@@ -316,6 +307,22 @@ int main (int argc, char **argv)
         fprintf(stderr, "unique name `%s' assigned\n", &(jackname[0]));
     }
 
+    /* set nframes from jack server if not set via args */
+    if( 0==nframes ) {
+        nframes = jack_get_buffer_size(client);
+    }
+
+    /* error out if nframes !=  jack_get_buffer_size() */
+    if(jack_get_buffer_size(client) != nframes) {
+        // FIXME, try to change jack_server
+        printf("ERR: currently, jack_get_buffer_size() can not be different than nframes\n");
+        printf("     in the future, jack_julia may attempt to set jack server buffer size\n");
+        usage();
+        return 0;
+    }
+
+    /* let user know what settings have been parsed */
+    fyi();
 
     /* tell the JACK server to call `process()' whenever
         there is work to be done.
@@ -361,7 +368,10 @@ int main (int argc, char **argv)
 
     /* set julia function handle with include and calling jl_get_function */
     jl_eval_string(include_str);
-    funchandle = jl_get_function(jl_main_module, "wizbang");    
+    funchandle = jl_get_function(jl_main_module, funcname);
+
+    /* call function once to force it to be JIT-compiled */
+    // FIXME, this call could mess with state variables of the function...
     jl_call2(funchandle, (jl_value_t*)input_array, (jl_value_t*)output_array);
 
     /* Let's set up a pa_ringbuffer, for single producer, single consumer */
