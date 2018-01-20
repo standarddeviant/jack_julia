@@ -1,5 +1,6 @@
 # a proper makefile would be nice, but this is functional
 
+set -u
 # 0.6.2 in the home directory
 #export JULIA_DIR="$HOME/julia-d386e40c17/" #bashrc
 #export JULIA_HOME="$JULIA_DIR/bin" #bashrc
