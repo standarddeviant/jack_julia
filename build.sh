@@ -15,8 +15,12 @@ gcc -Wall -Wextra -Wunused                           \
     -o jack_julia -fPIC -I$JULIA_DIR/include/julia   \
     -std=gnu99                                       \
     -L$JULIA_DIR/lib -L$JULIA_DIR/lib/julia          \
-     jack_julia.c                                    \
-    -l:libjulia.so.0.6.2                             \
+    jack_set_process_thread_example.c                \
+    -l:libjulia.so.0.7.0                             \
     -l:libstdc++.so.6 -l:libLLVM-3.9.so              \
     -DJULIA_ENABLE_THREADING=1                       \
     -lpthread -ljack -lm                             \
+
+
+
+    #  jack_julia.c ./pa_ringbuffer/pa_ringbuffer.c    \

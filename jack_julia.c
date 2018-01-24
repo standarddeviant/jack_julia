@@ -24,7 +24,7 @@
 #include <julia.h>
 JULIA_DEFINE_FAST_TLS() // only define this once, in an executable (not in a shared library) if you want fast code.
 
-//#include <pa_ringbuffer.h>
+#include <pa_ringbuffer.h>
 
 // START declaring variables for client
 #define JACK_JULIA_MAX_PORTS (64)
@@ -52,26 +52,22 @@ jl_array_t *input_array;
 jl_array_t *output_array;
 // STOP declaring variables for client
 
+// 1-channel buffers for dumping in/out to/from JACK and Julia
+PaUtilRingBuffer inrbufs[JACK_JULIA_MAX_PORTS]; // ringbuffer for communicating between threads
+PaUtilRingBuffer outrbufs[JACK_JULIA_MAX_PORTS]; // ringbuffer for communicating between threads
 
-
-// Interleaved buffers for dumping in/out of the the PaUtilRingBuffer
-// There is one for each thread, the fileio thread, and the jack thread
-// jack_default_audio_sample_t linbufIN[JACK_JULIA_MAX_PORTS * JACK_JULIA_MAX_FRAMES];
-// jack_default_audio_sample_t linbufOUT[JACK_JULIA_MAX_PORTS * JACK_JULIA_MAX_FRAMES];
-// PaUtilRingBuffer pa_ringbuf_; // ringbuffer for communicating between threads
-// PaUtilRingBuffer *pa_ringbuf = &(pa_ringbuf_);
 // void * ringbuf_memory; // ringbuffer pointer for use with malloc/free
 // int ringbuf_nframes = JACK_JULIA_MAX_FRAMES;
 
-// #define ISPOW2(x) ((x) > 0 && !((x) & (x-1)))
-// int nextpow2(int x) {
-//     if(ISPOW2(x)) {
-//         return x;
-//     }
-//     int power = 2;
-//     while (x >>= 1) power <<= 1;
-//     return (int)(1 << power);
-// }
+#define ISPOW2(x) ((x) > 0 && !((x) & (x-1)))
+int nextpow2(int x) {
+    if(ISPOW2(x)) {
+        return x;
+    }
+    int power = 2;
+    while (x >>= 1) power <<= 1;
+    return (int)(1 << power);
+}
 
 
 /**
@@ -83,61 +79,33 @@ jl_array_t *output_array;
  * the user (e.g. using Ctrl-C on a unix-ish operating system)
  */
 int jack_process(jack_nframes_t nframes, void *arg) {
-    unsigned int cidx, sidx;
-    // jack_nframes_t fidx, nframes_read_available, nframes_write_available;
-    // jack_nframes_t nframes_read, nframes_written;
-    // jack_nframes_t fidx;
+    unsigned int cidx;
+    jack_default_audio_sample_t *jackbuf;
 
-    // silence compiler
-    arg = arg;
-
-    jack_default_audio_sample_t *in = \
-        (jack_default_audio_sample_t*)jl_array_data(input_array);
-    jack_default_audio_sample_t *out = \
-        (jack_default_audio_sample_t*)jl_array_data(output_array);
-
-    // write from input jack-buffers to in input_array
     for(cidx=0; cidx<inchans; cidx++) {
-        jack_default_audio_sample_t *jackbuf = 
-                jack_port_get_buffer(jackin_ports[cidx], nframes);
-        for(sidx=0; sidx<nframes; sidx++) {
-            *(in++) = *(jackbuf++);
+        if(PaUtil_GetRingBufferWriteAvailable(inrbufs[cidx]) < nframes_jack) {
+            // FIXME, report overflow, and keep all channels/buffers synced 
+            continue;
         }
     }
 
-    // printf("DBG: jl_is_initialized() = %d\n", jl_is_initialized());
-    // printf("DBG: jl_eval_string('%s') evaluates to ", func_check_str);
-    // printf("%d\n", jl_unbox_bool(jl_eval_string(func_check_str)));
-
-    jl_eval_string("@show sqrt(2.0)");
-
-    // printf("DBG: jl_is_initialized() = %d\n", jl_is_initialized());
-
-    /* call fulia function */
-    /* FIXME, should we check funchandle for NULL each time? */
-    // jl_call2(funchandle, (jl_value_t*)input_array, (jl_value_t*)output_array);
-
-    // write from output_array to output jack-buffers
     for(cidx=0; cidx<outchans; cidx++) {
-        jack_default_audio_sample_t *jackbuf = 
-                jack_port_get_buffer(jackout_ports[cidx], nframes);
-        for(sidx=0; sidx<nframes; sidx++) {
-            *(jackbuf++) = *(out++);
+        if(PaUtil_GetRingBufferReadAvailable(outrbufs[cidx]) < nframes_jack) { 
+            // FIXME, report underflow, and keep all channels/buffers synced
+            // FIXME, write zeros to jack output
+            continue;
         }
     }
 
-    // nframes_write_available = PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
-    // if( nframes_write_available < nframes) {
-    //     /* FIXME, report overflow problem */
-    // }
+    for(cidx=0; cidx<inchans; cidx++) {
+        jackbuf = jack_port_get_buffer(inports[cidx]);
+        PaUtil_WriteRingBuffer(inbufs[cidx], jackbuf, nframes);
+    }
 
-    // nframes_written = PaUtil_WriteRingBuffer(
-    //     pa_ringbuf, &(linbufJACK[0]), nframes);
-    // if( nframes_written != nframes) {
-    //     /* FIXME, report overflow */
-    // }
-
-    return 0;
+    for(cidx=0; cidx<outchans; cidx++) {
+        jackbuf = jack_port_get_buffer(outports[cidx]);
+        PaUtil_ReadRingBuffer(outrbufs[cidx]) < nframes_jack) { 
+    }
 }
 
 
@@ -147,8 +115,7 @@ int jack_process(jack_nframes_t nframes, void *arg) {
  * JACK calls this shutdown_callback if the server ever shuts down or
  * decides to disconnect the client.
  */
-void
-jack_shutdown (void *arg)
+void jack_shutdown (void *arg)
 {
     arg=arg; /* silence compiler */
     // free(ringbuf_memory);
@@ -201,11 +168,9 @@ void fyi(void) {
 
 int main (int argc, char **argv)
 {
-
-
     // const char **ports;
-    // pthread_t fileio_thread;
-    // int thr = 1;
+    pthread_t fileio_thread;
+    int thr = 1;
     const char *server_name = NULL;
     jack_options_t options = JackNullOption;
     jack_status_t status;
@@ -373,30 +338,6 @@ int main (int argc, char **argv)
                 JackPortIsOutput, 0);
     }
 
-    /* create/allocate julia arrays/buffers */
-    jl_value_t *array_type = jl_apply_array_type(
-        (jl_value_t*)jl_float32_type, 2);
-    input_array = jl_alloc_array_2d(array_type, nframes, inchans);
-    output_array = jl_alloc_array_2d(array_type, nframes, outchans);
-    JL_GC_PUSH3(&array_type, &input_array, &output_array);
-
-    /* zero out arrays */
-    jack_default_audio_sample_t *in = \
-        (jack_default_audio_sample_t*)jl_array_data(input_array);
-    jack_default_audio_sample_t *out = \
-        (jack_default_audio_sample_t*)jl_array_data(output_array);
-    for(sidx=0; sidx<nframes*inchans; sidx++) in[sidx] = 0.0;
-    for(sidx=0; sidx<nframes*outchans; sidx++) out[sidx] = 0.0;
-    printf("INFO: created julia arrays for IO\n");
-
-    /* set julia function handle with include and calling jl_get_function */
-    jl_eval_string(include_str);
-    funchandle = jl_get_function(jl_main_module, funcname);
-
-    /* call function once to force it to be JIT-compiled */
-    // FIXME, this call could mess with state variables of the function...
-    jl_call2(funchandle, (jl_value_t*)input_array, (jl_value_t*)output_array);
-    printf("\n\nINFO: initialized and JIT'ed '%s'\n", funcname);
 
     /* Let's set up a pa_ringbuffer, for single producer, single consumer */
     /* ensure ringbuf_nframes is a power of 2 */
@@ -453,7 +394,79 @@ int main (int argc, char **argv)
 
     // free (ports);
 
-    /* keep running until stopped by the user */
+    /* keep calling julia code until stopped by the user */
+    while(1) {
+
+        // jack_nframes_t nframes_read_available, nframes_write_available;
+        // jack_nframes_t nframes_read, nframes_written;
+        // jack_nframes_t fidx;
+
+        // ensure (1)nframes_julia available to get from inrbuf, and 
+        //        (2)nframes_julia available to put into outrbuf
+        for(cidx=0; cidx<inchans; cidx++) {
+            if(PaUtil_GetRingBufferReadAvailable(inrbufs[cidx]) < nframes_jack) { 
+                sched_yield();
+                continue;
+            }
+        }
+
+        for(cidx=0; cidx<outchans; cidx++) {
+            if(PaUtil_GetRingBufferWriteAvailable(outrbufs[cidx]) < nframes_jack) { 
+                sched_yield();
+                continue;
+            }
+        }
+
+
+        jack_default_audio_sample_t *in = \
+            (jack_default_audio_sample_t*)jl_array_data(input_array);
+        jack_default_audio_sample_t *out = \
+            (jack_default_audio_sample_t*)jl_array_data(output_array);
+
+        // write from input jack-buffers to in input_array
+        for(cidx=0; cidx<inchans; cidx++) {
+            jack_default_audio_sample_t *jackbuf = 
+                    jack_port_get_buffer(jackin_ports[cidx], nframes);
+            for(sidx=0; sidx<nframes; sidx++) {
+                *(in++) = *(jackbuf++);
+            }
+        }
+
+        // printf("DBG: jl_is_initialized() = %d\n", jl_is_initialized());
+        // printf("DBG: jl_eval_string('%s') evaluates to ", func_check_str);
+        // printf("%d\n", jl_unbox_bool(jl_eval_string(func_check_str)));
+
+        jl_eval_string("@show sqrt(2.0)");
+
+        // printf("DBG: jl_is_initialized() = %d\n", jl_is_initialized());
+
+        /* call fulia function */
+        /* FIXME, should we check funchandle for NULL each time? */
+        // jl_call2(funchandle, (jl_value_t*)input_array, (jl_value_t*)output_array);
+
+        // write from output_array to output jack-buffers
+        for(cidx=0; cidx<outchans; cidx++) {
+            jack_default_audio_sample_t *jackbuf = 
+                    jack_port_get_buffer(jackout_ports[cidx], nframes);
+            for(sidx=0; sidx<nframes; sidx++) {
+                *(jackbuf++) = *(out++);
+            }
+        }
+
+        // nframes_write_available = PaUtil_GetRingBufferWriteAvailable(pa_ringbuf);
+        // if( nframes_write_available < nframes) {
+        //     /* FIXME, report overflow problem */
+        // }
+
+        // nframes_written = PaUtil_WriteRingBuffer(
+        //     pa_ringbuf, &(linbufJACK[0]), nframes);
+        // if( nframes_written != nframes) {
+        //     /* FIXME, report overflow */
+        // }
+
+        return 0;
+    } // end while(1) julia processing loop
+
 
     sleep (-1);
 
