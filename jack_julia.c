@@ -176,8 +176,7 @@ int main (int argc, char **argv)
     jack_status_t status;
 
     int c;
-    unsigned int cidx, sidx;
-
+    unsigned int cidx;//, sidx;
     char portname[JACK_PORT_NAME_SIZE] = {0};
 
     static struct option long_options[] = {

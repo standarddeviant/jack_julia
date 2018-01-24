@@ -8,13 +8,12 @@
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
+// getopt needs to be included manually b/c we compile -    std=c99
+#include <getopt.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <signal.h>
-
-#include <jack/jack.h>
-
 
 // libraries/code that require building/linking
 // #include <pthread.h>
@@ -60,8 +59,7 @@ volatile enum {
 	Exit
 } client_state = Init;
 
-static void signal_handler(int sig)
-{
+static void signal_handler(int sig) {
     sig=sig;
     jack_client_close(client);
     fprintf(stderr, "signal received, exiting ...\n");
@@ -75,9 +73,7 @@ static void signal_handler(int sig)
  * This client follows a simple rule: when the JACK transport is
  * running, copy the input port to the output.  When it stops, exit.
  */
-static int
-_process (jack_nframes_t nframes)
-{
+static int _process (jack_nframes_t nframes) {
     jack_default_audio_sample_t *in, *out;
     jack_transport_state_t ts = jack_transport_query(client, NULL);
 
@@ -102,15 +98,14 @@ _process (jack_nframes_t nframes)
     return 0;
 }
 
-static void* jack_thread(void *arg)
-{
-	jack_client_t* client = (jack_client_t*) arg;
+static void* jack_thread(void *arg) {
+    jack_client_t* client = (jack_client_t*) arg;
 
-	while (1) {
+    while (1) {
 
-		jack_nframes_t frames = jack_cycle_wait (client);
-		int status = _process(frames);
-		jack_cycle_signal (client, status);
+        jack_nframes_t frames = jack_cycle_wait (client);
+        int status = _process(frames);
+        jack_cycle_signal (client, status);
 
         /*
             Possibly do something else after signaling next clients in the graph
@@ -125,178 +120,215 @@ static void* jack_thread(void *arg)
 	return 0;
 }
 
-/*
-static void* jack_thread(void *arg)
-{
-	jack_client_t* client = (jack_client_t*) arg;
-
-	while (1) {
-		jack_nframes_t frames;
-		int status;
-		// cycle 1
-		frames = jack_cycle_wait (client);
-		status = _process(frames);
-		jack_cycle_signal (client, status);
-		// cycle 2
-		frames = jack_cycle_wait (client);
-		status = _process(frames);
-		jack_cycle_signal (client, status);
-		// cycle 3
-		frames = jack_cycle_wait (client);
-		status = _process(frames);
-		jack_cycle_signal (client, status);
-		// cycle 4
-		frames = jack_cycle_wait (client);
-		status = _process(frames);
-		jack_cycle_signal (client, status);
-	}
-
-	return 0;
-}
-*/
-
 /**
  * JACK calls this shutdown_callback if the server ever shuts down or
  * decides to disconnect the client.
  */
-static void
-jack_shutdown (void *arg)
+static void jack_shutdown (void *arg)
 {
     arg=arg;
     fprintf(stderr, "JACK shut down, exiting ...\n");
 	exit (1);
 }
 
-int
-main (int argc, char *argv[])
-{
-	const char **ports;
-	const char *client_name;
-	const char *server_name = NULL;
-	jack_options_t options = JackNullOption;
-	jack_status_t status;
 
-	if (argc >= 2) {		/* client name specified? */
-		client_name = argv[1];
-		if (argc >= 3) {	/* server name specified? */
-			server_name = argv[2];
-			options |= JackServerName;
-		}
-	} else {			/* use basename of argv[0] */
-		client_name = strrchr(argv[0], '/');
-		if (client_name == 0) {
-			client_name = argv[0];
-		} else {
-			client_name++;
-		}
-	}
+void usage() {
+    printf("\n\n");
+    printf("Usage:\n");
+    printf("jack_julia [OPTIONS...] -i INCHANS -o OUTCHANS\n");
+    printf("           --include ALGO.jl --function ALGOFUNC\n");
+    printf("  -h, --help        print this help text\n");
+    printf("REQUIRED ARGS:\n");
+    printf("  -i, --inchans     set number of input channels\n");
+    printf("  -o, --outchans    set number of output channels\n");
+    printf("  -c, --include     set julia source file to include\n");
+    printf("  -f, --function    set julia processing function\n");
+    printf("      jack_julia will call this this function with two arguments:\n");
+    printf("        1) input_array, of size (nframes x inchans)\n");
+    printf("        2) output_array, of size (nframes x outchans)\n");
+    printf("OPTIONAL ARGS:\n");
+    printf("  -r, --nframes     set number of frames per function call\n");
+    printf("                    currently this must be the same as jack_get_buffer_size()\n");
+    printf("  -a, --inconnect   jack client to automatically connect to inputs\n");
+    printf("  -b, --outconnect  jack client to automatically connect to inputs\n");
+    printf("  -n, --name      specify the name of the jack client\n");
+    // printf("  -w,    wait until W ports have been connected before playing or recording\n");
+    printf("\n\n");
+}
 
-	/* open a client connection to the JACK server */
 
-	client = jack_client_open (client_name, options, &status, server_name);
-	if (client == NULL) {
-		fprintf (stderr, "jack_client_open() failed, "
-			 "status = 0x%2.0x\n", status);
-		if (status & JackServerFailed) {
-			fprintf (stderr, "Unable to connect to JACK server\n");
-		}
-		exit (1);
-	}
-	if (status & JackServerStarted) {
-		fprintf (stderr, "JACK server started\n");
-	}
-	if (status & JackNameNotUnique) {
-		client_name = jack_get_client_name(client);
-		fprintf (stderr, "unique name `%s' assigned\n", client_name);
-	}
+void fyi(void) {
+    printf("\n\nINFO: Attempting to call"
+           "\n    '%s' (funcname) from "
+           "\n    '%s' (include_file)"
+           "\n    nframes=%d"
+           "\n    inchans=%d"
+           "\n    outchans=%d"
+           "\n    client-name='%s'\n\n",
+            funcname, include_file, nframes, inchans, outchans, jackname);
+    return;
+}
 
-	/* tell the JACK server to call `process()' whenever
-	   there is work to be done.
-	*/
+
+int main (int argc, char *argv[]) {
+    // const char **ports;
+    // const char *client_name;
+    const char *server_name = NULL;
+    jack_options_t options = JackNullOption;
+    jack_status_t status;
+    int c;
+    unsigned int cidx;//, sidx;
+    char portname[JACK_PORT_NAME_SIZE] = {0};
+
+    static struct option long_options[] = {
+        /* These options set a flag. */
+        {"help",       no_argument,       0, 'h'},
+        {"nframes",    required_argument, 0, 'r'},
+        {"inchans",    required_argument, 0, 'i'},
+        {"outchans",   required_argument, 0, 'o'},
+        {"inconnect",  required_argument, 0, 'a'},
+        {"outconnect", required_argument, 0, 'b'},
+        {"name",       required_argument, 0, 'n'},
+        {"include",    required_argument, 0, 'c'},
+        {"function",   required_argument, 0, 'f'},
+        {0, 0, 0, 0}
+    };
+
+    /* getopt_long stores the option index here. */
+    int option_index = 0;
+
+    while ((c = getopt_long(argc, argv, 
+            "hr:i:o:a:b:n:c:f:h", long_options, &option_index)) != -1)
+    switch (c) {
+        case 'h':
+            usage("");
+            return 0;
+        case 'r':
+            nframes = atoi(optarg);
+            break;
+        case 'i':
+            inchans = atoi(optarg);
+            break;
+        case 'o':
+            outchans = atoi(optarg);
+            break;
+        case 'a':
+            snprintf(inconnect, JACK_CLIENT_NAME_SIZE, "%s", optarg);
+            break;
+        case 'b':
+            snprintf(outconnect, JACK_CLIENT_NAME_SIZE, "%s", optarg);
+            break;
+        case 'n':
+            snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", optarg);
+            break;
+        case 'c':
+            snprintf(include_file, JACK_CLIENT_NAME_SIZE, "%s", optarg);
+            snprintf(include_str, JACK_CLIENT_NAME_SIZE, \
+                "include(\"%s\")", include_file);
+            break;
+        case 'f':
+            snprintf(funcname, JACK_CLIENT_NAME_SIZE, "%s", optarg);
+            snprintf(func_check_str, JACK_CLIENT_NAME_SIZE, \
+                "isdefined(:%s) && typeof(%s) <: Function",
+                funcname, funcname);
+
+            break;
+        default:
+            abort ();
+    }
+
+
+
+
+
+    /* open a client connection to the JACK server */
+    client = jack_client_open(jackname, options, &status, server_name);
+    if (client == NULL) {
+        fprintf (stderr, "jack_client_open() failed, "
+                "status = 0x%2.0x\n", status);
+        if (status & JackServerFailed) {
+            fprintf (stderr, "Unable to connect to JACK server\n");
+        }
+        exit (1);
+    }
+    if (status & JackServerStarted) {
+        fprintf (stderr, "JACK server started\n");
+    }
+    if (status & JackNameNotUnique) {
+        snprintf(jackname, JACK_CLIENT_NAME_SIZE, "%s", jack_get_client_name(client));
+        fprintf (stderr, "unique name `%s' assigned\n", jackname);
+    }
+
+    /* tell the JACK server to call `process()' whenever
+        there is work to be done.
+    */
     if (jack_set_process_thread(client, jack_thread, client) < 0)
-		exit(1);
+        exit(1);
 
-	/* tell the JACK server to call `jack_shutdown()' if
-	   it ever shuts down, either entirely, or if it
-	   just decides to stop calling us.
-	*/
+    /* tell the JACK server to call `jack_shutdown()' if
+        it ever shuts down, either entirely, or if it
+        just decides to stop calling us.
+    */
+    jack_on_shutdown (client, jack_shutdown, 0);
 
-	jack_on_shutdown (client, jack_shutdown, 0);
+    /* display the current sample rate. */
+    printf ("engine sample rate: %" PRIu32 "\n",
+        jack_get_sample_rate (client));
 
-	/* display the current sample rate.
-	 */
+    /* create jack ports */
+    printf("INFO: creating %d in-ports\n", inchans);
+    for(cidx=0; cidx<inchans; cidx++) {
+        snprintf(portname, JACK_PORT_NAME_SIZE, "in_%02d", cidx+1);
+        jackin_ports[cidx] = jack_port_register (client, portname,
+                JACK_DEFAULT_AUDIO_TYPE,
+                JackPortIsInput, 0);
+    }
+    printf("INFO: creating %d out-ports\n", outchans);
+    for(cidx=0; cidx<inchans; cidx++) {
+        snprintf(portname, JACK_PORT_NAME_SIZE, "out_%02d", cidx+1);
+        jackout_ports[cidx] = jack_port_register(client, portname,                    
+                JACK_DEFAULT_AUDIO_TYPE,
+                JackPortIsOutput, 0);
+    }
 
-	printf ("engine sample rate: %" PRIu32 "\n",
-		jack_get_sample_rate (client));
+    if ((input_port == NULL) || (output_port == NULL)) {
+        fprintf(stderr, "no more JACK ports available\n");
+        exit (1);
+    }
 
-	/* create two ports */
+    /* Tell the JACK server that we are ready to roll.  Our
+        * process() callback will start running now. */
 
-	input_port = jack_port_register (client, "input",
-					 JACK_DEFAULT_AUDIO_TYPE,
-					 JackPortIsInput, 0);
-	output_port = jack_port_register (client, "output",
-					  JACK_DEFAULT_AUDIO_TYPE,
-					  JackPortIsOutput, 0);
+    if (jack_activate (client)) {
+        fprintf (stderr, "cannot activate client");
+        exit (1);
+    }
 
-	if ((input_port == NULL) || (output_port == NULL)) {
-		fprintf(stderr, "no more JACK ports available\n");
-		exit (1);
-	}
+    /* Connect the ports.  You can't do this before the client is
+        * activated, because we can't make connections to clients
+        * that aren't running.  Note the confusing (but necessary)
+        * orientation of the driver backend ports: playback ports are
+        * "input" to the backend, and capture ports are "output" from
+        * it.
+        */
 
-	/* Tell the JACK server that we are ready to roll.  Our
-	 * process() callback will start running now. */
 
-	if (jack_activate (client)) {
-		fprintf (stderr, "cannot activate client");
-		exit (1);
-	}
-
-	/* Connect the ports.  You can't do this before the client is
-	 * activated, because we can't make connections to clients
-	 * that aren't running.  Note the confusing (but necessary)
-	 * orientation of the driver backend ports: playback ports are
-	 * "input" to the backend, and capture ports are "output" from
-	 * it.
-	 */
-
-	ports = jack_get_ports (client, NULL, NULL,
-				JackPortIsPhysical|JackPortIsOutput);
-	if (ports == NULL) {
-		fprintf(stderr, "no physical capture ports\n");
-		exit (1);
-	}
-
-	if (jack_connect (client, ports[0], jack_port_name (input_port))) {
-		fprintf (stderr, "cannot connect input ports\n");
-	}
-
-	jack_free (ports);
-
-	ports = jack_get_ports (client, NULL, NULL,
-				JackPortIsPhysical|JackPortIsInput);
-	if (ports == NULL) {
-		fprintf(stderr, "no physical playback ports\n");
-		exit (1);
-	}
-
-	if (jack_connect (client, jack_port_name (output_port), ports[0])) {
-		fprintf (stderr, "cannot connect output ports\n");
-	}
-
-	jack_free (ports);
+    // if (jack_connect (client, ports[0], jack_port_name (input_port))) {
+    //     fprintf (stderr, "cannot connect input ports\n");
+    // }
 
     /* install a signal handler to properly quits jack client */
     signal(SIGQUIT, signal_handler);
-	signal(SIGTERM, signal_handler);
-	signal(SIGHUP, signal_handler);
-	signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    signal(SIGHUP, signal_handler);
+    signal(SIGINT, signal_handler);
 
-	/* keep running until the transport stops */
+    /* keep running until the transport stops */
 
-	while (client_state != Exit) {
-		sleep (1);
-	}
+    while (client_state != Exit) {
+        sleep (1);
+    }
 
-	jack_client_close (client);
-	exit (0);
+    jack_client_close (client);
+    exit (0);
 }
